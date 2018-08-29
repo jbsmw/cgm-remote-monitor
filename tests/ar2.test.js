@@ -1,25 +1,59 @@
+'use strict';
+
 var should = require('should');
+var levels = require('../lib/levels');
+
+var FIVE_MINS = 300000;
+var SIX_MINS = 360000;
 
 describe('ar2', function ( ) {
+  var ctx = {
+    settings: {}
+    , language: require('../lib/language')()
+  };
+  ctx.ddata = require('../lib/data/ddata')();
+  ctx.notifications = require('../lib/notifications')(env, ctx);
+  ctx.levels = levels;
 
-  var ar2 = require('../lib/plugins/ar2')();
-  var delta = require('../lib/plugins/delta')();
+  var ar2 = require('../lib/plugins/ar2')(ctx);
+  var bgnow = require('../lib/plugins/bgnow')(ctx);
 
   var env = require('../env')();
 
-  var ctx = {};
-  ctx.data = require('../lib/data')(env, ctx);
-  ctx.notifications = require('../lib/notifications')(env, ctx);
-
   var now = Date.now();
-  var before = now - (5 * 60 * 1000);
+  var before = now - FIVE_MINS;
+
+  function prepareSandbox(base) {
+    var sbx = base || require('../lib/sandbox')().serverInit(env, ctx);
+    bgnow.setProperties(sbx);
+    ar2.setProperties(sbx);
+    return sbx;
+  }
+
+  it('should plot a cone', function () {
+    ctx.ddata.sgvs = [{mgdl: 100, mills: before}, {mgdl: 105, mills: now}];
+    var sbx = prepareSandbox();
+    var cone = ar2.forecastCone(sbx);
+    cone.length.should.equal(26);
+  });
+
+  it('should plot a line if coneFactor is 0', function () {
+    ctx.ddata.sgvs = [{mgdl: 100, mills: before}, {mgdl: 105, mills: now}];
+
+    var env0 = require('../env')();
+    env0.extendedSettings = { ar2: { coneFactor: 0 } };
+    var sbx = require('../lib/sandbox')().serverInit(env0, ctx).withExtendedSettings(ar2);
+    bgnow.setProperties(sbx);
+    var cone = ar2.forecastCone(sbx);
+    cone.length.should.equal(13);
+  });
 
 
   it('Not trigger an alarm when in range', function (done) {
     ctx.notifications.initRequests();
-    ctx.data.sgvs = [{y: 100, x: before}, {y: 105, x: now}];
+    ctx.ddata.sgvs = [{mgdl: 100, mills: before}, {mgdl: 105, mills: now}];
 
-    var sbx = require('../lib/sandbox')().serverInit(env, ctx);
+    var sbx = prepareSandbox();
     ar2.checkNotifications(sbx);
     should.not.exist(ctx.notifications.findHighestAlarm());
 
@@ -28,27 +62,32 @@ describe('ar2', function ( ) {
 
   it('should trigger a warning when going above target', function (done) {
     ctx.notifications.initRequests();
-    ctx.data.sgvs = [{y: 150, x: before}, {y: 170, x: now}];
+    ctx.ddata.sgvs = [{mgdl: 150, mills: before}, {mgdl: 170, mills: now}];
 
-    var sbx = require('../lib/sandbox')().serverInit(env, ctx);
-    delta.setProperties(sbx);
+    var sbx = prepareSandbox();
+    sbx.offerProperty('iob', function setFakeIOB() {
+      return {displayLine: 'IOB: 1.25U'};
+    });
+    sbx.offerProperty('direction', function setFakeDirection() {
+      return {value: 'FortyFiveUp', label: '↗', entity: '&#8599;'};
+    });
     ar2.checkNotifications(sbx);
     var highest = ctx.notifications.findHighestAlarm();
-    highest.level.should.equal(ctx.notifications.levels.WARN);
+    highest.level.should.equal(levels.WARN);
     highest.title.should.equal('Warning, HIGH predicted');
-    highest.message.should.startWith('BG Now: 170 +20 mg/dl');
+    highest.message.should.equal('BG Now: 170 +20 ↗ mg/dl\nBG 15m: 206 mg/dl\nIOB: 1.25U');
 
     done();
   });
 
   it('should trigger a urgent alarm when going high fast', function (done) {
     ctx.notifications.initRequests();
-    ctx.data.sgvs = [{y: 140, x: before}, {y: 200, x: now}];
+    ctx.ddata.sgvs = [{mgdl: 140, mills: before}, {mgdl: 200, mills: now}];
 
-    var sbx = require('../lib/sandbox')().serverInit(env, ctx);
+    var sbx = prepareSandbox();
     ar2.checkNotifications(sbx);
     var highest = ctx.notifications.findHighestAlarm();
-    highest.level.should.equal(ctx.notifications.levels.URGENT);
+    highest.level.should.equal(levels.URGENT);
     highest.title.should.equal('Urgent, HIGH');
 
     done();
@@ -56,12 +95,12 @@ describe('ar2', function ( ) {
 
   it('should trigger a warning when below target', function (done) {
     ctx.notifications.initRequests();
-    ctx.data.sgvs = [{y: 90, x: before}, {y: 80, x: now}];
+    ctx.ddata.sgvs = [{mgdl: 90, mills: before}, {mgdl: 80, mills: now}];
 
-    var sbx = require('../lib/sandbox')().serverInit(env, ctx);
+    var sbx = prepareSandbox();
     ar2.checkNotifications(sbx);
     var highest = ctx.notifications.findHighestAlarm();
-    highest.level.should.equal(ctx.notifications.levels.WARN);
+    highest.level.should.equal(levels.WARN);
     highest.title.should.equal('Warning, LOW');
 
     done();
@@ -69,12 +108,12 @@ describe('ar2', function ( ) {
 
   it('should trigger a warning when almost below target', function (done) {
     ctx.notifications.initRequests();
-    ctx.data.sgvs = [{y: 90, x: before}, {y: 83, x: now}];
+    ctx.ddata.sgvs = [{mgdl: 90, mills: before}, {mgdl: 83, mills: now}];
 
-    var sbx = require('../lib/sandbox')().serverInit(env, ctx);
+    var sbx = prepareSandbox();
     ar2.checkNotifications(sbx);
     var highest = ctx.notifications.findHighestAlarm();
-    highest.level.should.equal(ctx.notifications.levels.WARN);
+    highest.level.should.equal(levels.WARN);
     highest.title.should.equal('Warning, LOW predicted');
 
     done();
@@ -82,49 +121,46 @@ describe('ar2', function ( ) {
 
   it('should trigger a urgent alarm when falling fast', function (done) {
     ctx.notifications.initRequests();
-    ctx.data.sgvs = [{y: 120, x: before}, {y: 85, x: now}];
+    ctx.ddata.sgvs = [{mgdl: 120, mills: before}, {mgdl: 85, mills: now}];
 
-    var sbx = require('../lib/sandbox')().serverInit(env, ctx);
+    var sbx = prepareSandbox();
     ar2.checkNotifications(sbx);
     var highest = ctx.notifications.findHighestAlarm();
-    highest.level.should.equal(ctx.notifications.levels.URGENT);
+    highest.level.should.equal(levels.URGENT);
     highest.title.should.equal('Urgent, LOW predicted');
 
     done();
   });
 
-  function rawSandbox(ctx) {
-    var envRaw = require('../env')();
-    envRaw.extendedSettings = {'ar2': {useRaw: true}};
-    return require('../lib/sandbox')().serverInit(envRaw, ctx);
-  }
-
-  it('should trigger a warning (no urgent for raw) when raw is falling really fast, but sgv is steady', function (done) {
+  it('should trigger a warning alarm by interpolating when more than 5mins apart', function (done) {
     ctx.notifications.initRequests();
-    ctx.data.sgvs = [{unfiltered: 113680, filtered: 111232, y: 100, x: before, noise: 1}, {unfiltered: 43680, filtered: 111232, y: 100, x: now, noise: 1}];
-    ctx.data.cals = [{scale: 1, intercept: 25717.82377004309, slope: 766.895601715918}];
 
-    var sbx = rawSandbox(ctx);
-    ar2.checkNotifications(sbx.withExtendedSettings(ar2));
+    //same as previous test but prev is 10 mins ago, so delta isn't enough to trigger an urgent alarm
+    ctx.ddata.sgvs = [{mgdl: 120, mills: before - SIX_MINS}, {mgdl: 85, mills: now}];
+
+    var sbx = prepareSandbox();
+    ar2.checkNotifications(sbx);
     var highest = ctx.notifications.findHighestAlarm();
-    highest.level.should.equal(ctx.notifications.levels.WARN);
-    highest.title.should.equal('Warning, LOW predicted w/raw');
+    highest.level.should.equal(levels.WARN);
+    highest.title.should.equal('Warning, LOW predicted');
 
     done();
   });
 
-  it('should trigger a warning (no urgent for raw) when raw is rising really fast, but sgv is steady', function (done) {
-    ctx.notifications.initRequests();
-    ctx.data.sgvs = [{unfiltered: 113680, filtered: 111232, y: 100, x: before, noise: 1}, {unfiltered: 183680, filtered: 111232, y: 100, x: now, noise: 1}];
-    ctx.data.cals = [{scale: 1, intercept: 25717.82377004309, slope: 766.895601715918}];
+  it('should handle alexa requests', function (done) {
+     var now = Date.now();
+     var before = now - FIVE_MINS;
 
-    var sbx = rawSandbox(ctx);
-    ar2.checkNotifications(sbx.withExtendedSettings(ar2));
-    var highest = ctx.notifications.findHighestAlarm();
-    highest.level.should.equal(ctx.notifications.levels.WARN);
-    highest.title.should.equal('Warning, HIGH predicted w/raw');
+    ctx.ddata.sgvs = [{mgdl: 100, mills: before}, {mgdl: 105, mills: now}];
+    var sbx = prepareSandbox();
 
-    done();
+    ar2.alexa.intentHandlers.length.should.equal(1);
+
+    ar2.alexa.intentHandlers[0].intentHandler(function next(title, response) {
+      title.should.equal('AR2 Forecast');
+      response.should.equal('You are expected to be between 109 and 120 over the in 30 minutes');
+      done();
+    }, [], sbx);
   });
 
 });
